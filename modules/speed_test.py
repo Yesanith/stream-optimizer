@@ -1,8 +1,11 @@
+# speedtest-cli ships without type hints
+# pyright: reportMissingTypeStubs=false
 from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from types import ModuleType
+from typing import Any, Callable, Dict, Optional
 
 try:
     import speedtest
@@ -15,7 +18,7 @@ ProgressCallback = Callable[[str, float, Dict[str, float]], None]
 
 
 class SpeedTestError(Exception):
-    def __init__(self, message: str, detail: str = ""):
+    def __init__(self, message: str, detail: str = "") -> None:
         super().__init__(message)
         self.message = message
         self.detail = detail
@@ -29,23 +32,27 @@ class SpeedTestResult:
     server: str
 
 
-def _connect(timeout: float):
+def _ignore_progress(stage: str, fraction: float, measured: Dict[str, float]) -> None:
+    pass
+
+
+def _connect(module: ModuleType, timeout: int) -> Any:
     last_error: Optional[Exception] = None
     # some networks block one of the two config endpoints so try both
     for secure in (True, False):
         try:
-            return speedtest.Speedtest(timeout=timeout, secure=secure)
+            return module.Speedtest(timeout=timeout, secure=secure)
         except Exception as exc:
             last_error = exc
     raise SpeedTestError("Could not reach speedtest.net. Check your internet connection or firewall.", str(last_error))
 
 
-def _counter(report: ProgressCallback, stage: str, measured: Dict[str, float]):
+def _counter(report: ProgressCallback, stage: str, measured: Dict[str, float]) -> Callable[..., None]:
     lock = threading.Lock()
     finished = [0]
 
     # speedtest-cli calls this from its worker threads, once with start=True and once with end=True per request
-    def callback(_index, total, start=False, end=False):
+    def callback(_index: int, total: int, start: bool = False, end: bool = False) -> None:
         if not end:
             return
         with lock:
@@ -56,19 +63,19 @@ def _counter(report: ProgressCallback, stage: str, measured: Dict[str, float]):
     return callback
 
 
-def run_speed_test(progress: Optional[ProgressCallback] = None, timeout: float = 15) -> SpeedTestResult:
+def run_speed_test(progress: Optional[ProgressCallback] = None, timeout: int = 15) -> SpeedTestResult:
     if speedtest is None:
         raise SpeedTestError("speedtest-cli is not installed. Run: pip install -r requirements.txt")
 
-    report = progress or (lambda *_: None)
+    report = progress or _ignore_progress
     measured: Dict[str, float] = {}
 
     report("connecting", 0.0, dict(measured))
-    client = _connect(timeout)
+    client = _connect(speedtest, timeout)
 
     report("server", 0.0, dict(measured))
     try:
-        server = client.get_best_server()
+        server: Dict[str, Any] = client.get_best_server()
     except Exception as exc:
         raise SpeedTestError("No speed test server responded. Try again in a moment.", str(exc))
     measured["ping_ms"] = float(server.get("latency", 0.0))

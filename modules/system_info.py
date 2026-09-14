@@ -1,3 +1,5 @@
+# gputil and py-cpuinfo ship without type hints
+# pyright: reportMissingTypeStubs=false
 from __future__ import annotations
 
 import platform
@@ -6,7 +8,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, List, Optional, cast
 
 try:
     import cpuinfo
@@ -39,11 +41,11 @@ class SystemInfo:
     physical_cores: int
     logical_cores: int
     ram_gb: float
-    gpus: List[GPUInfo] = field(default_factory=list)
+    gpus: List[GPUInfo] = field(default_factory=list[GPUInfo])
     has_nvenc: bool = False
     has_amf: bool = False
     has_qsv: bool = False
-    errors: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list[str])
 
 
 def gpu_vendor(name: str) -> str:
@@ -70,12 +72,10 @@ def supports_qsv(name: str) -> bool:
 
 
 def _run(cmd: List[str], timeout: float = 10) -> str:
-    kwargs = {}
-    if sys.platform == "win32":
-        # keeps a console window from flashing when launched from the gui
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    # keeps a console window from flashing when launched from the gui
+    creationflags: int = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout, **kwargs)
+        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout, creationflags=creationflags)
     except (OSError, subprocess.SubprocessError):
         return ""
     return proc.stdout if proc.returncode == 0 else ""
@@ -95,16 +95,17 @@ def _cpu_name() -> str:
 def _nvidia_gpus() -> List[GPUInfo]:
     if GPUtil is not None:
         try:
-            gpus = [GPUInfo(g.name, "nvidia", int(g.memoryTotal)) for g in GPUtil.getGPUs()]
-            if gpus:
-                return gpus
+            devices = cast(List[Any], GPUtil.getGPUs())
+            found = [GPUInfo(str(g.name), "nvidia", int(g.memoryTotal)) for g in devices]
+            if found:
+                return found
         except Exception:
             pass
 
     exe = shutil.which("nvidia-smi")
     if not exe:
         return []
-    gpus = []
+    gpus: List[GPUInfo] = []
     for line in _run([exe, "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"]).splitlines():
         parts = [p.strip() for p in line.split(",")]
         if not parts[0]:

@@ -1,8 +1,11 @@
+# customtkinter has no type hints for its **kwargs based widget api, so strict mode would flag every grid/configure call
+# pyright: reportMissingTypeStubs=false, reportUnknownMemberType=false
 from __future__ import annotations
 
 import queue
 import threading
-from typing import Dict, List, Optional, Tuple
+from tkinter import Event, Misc
+from typing import Callable, Dict, List, Literal, Optional, Set, Tuple
 
 import customtkinter as ctk
 
@@ -40,7 +43,8 @@ TONES = {
 
 PLATFORM_COLORS = {"twitch": "#9146ff", "kick": "#53fc18", "youtube": "#ff3040", "other": COLORS["accent"]}
 
-STAGES = {
+# label, overall progress at stage start, overall progress at stage end
+STAGES: Dict[str, Tuple[str, float, float]] = {
     "connecting": ("Connecting to speedtest.net", 0.00, 0.05),
     "server": ("Finding the closest server", 0.05, 0.15),
     "download": ("Measuring download", 0.15, 0.55),
@@ -49,12 +53,12 @@ STAGES = {
 }
 
 
-def font(size: int, weight: str = "normal") -> ctk.CTkFont:
+def font(size: int, weight: Literal["normal", "bold"] = "normal") -> ctk.CTkFont:
     return ctk.CTkFont(size=size, weight=weight)
 
 
 class Pill(ctk.CTkLabel):
-    def __init__(self, master, text: str = "", tone: str = "neutral"):
+    def __init__(self, master: Misc, text: str = "", tone: str = "neutral") -> None:
         super().__init__(master, text=text, height=24, corner_radius=12, padx=10, font=font(12, "bold"))
         self.set(text, tone)
 
@@ -64,7 +68,7 @@ class Pill(ctk.CTkLabel):
 
 
 class Card(ctk.CTkFrame):
-    def __init__(self, master, title: str):
+    def __init__(self, master: Misc, title: str) -> None:
         super().__init__(master, fg_color=COLORS["card"], corner_radius=14, border_width=1, border_color=COLORS["border"])
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -79,16 +83,19 @@ class Card(ctk.CTkFrame):
 
 
 class Tile(ctk.CTkFrame):
-    def __init__(self, master, caption: str):
+    def __init__(self, master: Misc, caption: str) -> None:
         super().__init__(master, fg_color=COLORS["tile"], corner_radius=10)
         ctk.CTkLabel(self, text=caption.upper(), font=font(11, "bold"), text_color=COLORS["muted"], anchor="w").pack(fill="x", padx=14, pady=(10, 0))
         self.value = ctk.CTkLabel(self, text="-", font=font(17, "bold"), text_color=COLORS["text"], anchor="w", justify="left", wraplength=150)
         self.value.pack(fill="x", padx=14, pady=(0, 10))
-        self.bind("<Configure>", lambda e: self.value.configure(wraplength=max(e.width - 32, 80)))
+        self.bind("<Configure>", self._fit_text)
+
+    def _fit_text(self, event: Event[Misc]) -> None:
+        self.value.configure(wraplength=max(event.width - 32, 80))
 
 
 class StreamOptimizerApp(ctk.CTk):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.title(APP_NAME)
         self.geometry("1220x880")
@@ -98,8 +105,9 @@ class StreamOptimizerApp(ctk.CTk):
         self.system: Optional[SystemInfo] = None
         self.speed: Optional[SpeedTestResult] = None
         self.recommendation: Optional[Recommendation] = None
-        self.events: "queue.Queue[Tuple[str, object]]" = queue.Queue()
-        self.busy = set()
+        self._events: queue.Queue[Callable[[], None]] = queue.Queue()
+        # not named busy, tkinter.Misc has a busy() method since python 3.13
+        self._running: Set[str] = set()
         self.note_labels: List[ctk.CTkLabel] = []
 
         self.grid_columnconfigure(1, weight=1)
@@ -146,16 +154,16 @@ class StreamOptimizerApp(ctk.CTk):
         self.manual_entry = ctk.CTkEntry(bar, height=38, corner_radius=10, placeholder_text="Upload in Mbps, e.g. 12.5",
                                          fg_color=COLORS["secondary"], border_color=COLORS["border"], font=font(14))
         self.manual_entry.grid(row=10, column=0, sticky="ew", padx=24)
-        self.manual_entry.bind("<Return>", lambda _e: self._generate())
+        self.manual_entry.bind("<Return>", self._on_manual_return)
         ctk.CTkLabel(bar, text="If filled, this value is used instead of the speed test result. Handy when the test fails.",
                      font=font(12), text_color=COLORS["muted"], anchor="w", justify="left", wraplength=280).grid(row=11, column=0, sticky="ew", padx=24, pady=(6, 0))
 
         ctk.CTkLabel(bar, text=f"v{APP_VERSION}", font=font(12), text_color=COLORS["muted"], anchor="w").grid(row=21, column=0, sticky="ew", padx=24, pady=18)
 
-    def _section(self, master, row: int, text: str, top: int = 0) -> None:
+    def _section(self, master: Misc, row: int, text: str, top: int = 0) -> None:
         ctk.CTkLabel(master, text=text.upper(), font=font(11, "bold"), text_color=COLORS["muted"], anchor="w").grid(row=row, column=0, sticky="ew", padx=24, pady=(top, 6))
 
-    def _button(self, master, row: int, text: str, command, primary: bool) -> ctk.CTkButton:
+    def _button(self, master: Misc, row: int, text: str, command: Callable[[], None], primary: bool) -> ctk.CTkButton:
         button = ctk.CTkButton(
             master, text=text, command=command, height=42, corner_radius=10, anchor="w", font=font(14, "bold"),
             fg_color=COLORS["accent"] if primary else COLORS["secondary"],
@@ -179,7 +187,7 @@ class StreamOptimizerApp(ctk.CTk):
         self.status = ctk.CTkLabel(main, text="Start by scanning your hardware.", font=font(12), text_color=COLORS["muted"], anchor="w")
         self.status.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
 
-    def _build_hardware_card(self, master) -> None:
+    def _build_hardware_card(self, master: Misc) -> None:
         card = Card(master, "Hardware")
         card.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 16))
         self.hw_pill = Pill(card.header, "Not scanned")
@@ -197,7 +205,7 @@ class StreamOptimizerApp(ctk.CTk):
         ctk.CTkLabel(body, text="Encoders", font=font(13), text_color=COLORS["muted"], anchor="w", width=64).grid(row=4, column=0, sticky="w", pady=(8, 0))
         pills = ctk.CTkFrame(body, fg_color="transparent")
         pills.grid(row=4, column=1, sticky="w", pady=(8, 0))
-        self.encoder_pills = {}
+        self.encoder_pills: Dict[str, Pill] = {}
         for column, name in enumerate(("NVENC", "AMF", "QSV")):
             pill = Pill(pills, name)
             pill.grid(row=0, column=column, padx=(0, 6))
@@ -206,7 +214,7 @@ class StreamOptimizerApp(ctk.CTk):
         self.hw_error = ctk.CTkLabel(body, text="", font=font(12), text_color=TONES["warning"][1], anchor="w", justify="left", wraplength=360)
         self.hw_error.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
-    def _build_network_card(self, master) -> None:
+    def _build_network_card(self, master: Misc) -> None:
         card = Card(master, "Connection")
         card.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 16))
         self.net_pill = Pill(card.header, "Not tested")
@@ -233,7 +241,7 @@ class StreamOptimizerApp(ctk.CTk):
         self.net_server = ctk.CTkLabel(body, text="", font=font(12), text_color=COLORS["muted"], anchor="w", justify="left", wraplength=380)
         self.net_server.grid(row=3, column=0, columnspan=3, sticky="w")
 
-    def _build_settings_card(self, master) -> None:
+    def _build_settings_card(self, master: Misc) -> None:
         card = Card(master, "Recommended OBS Settings")
         card.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 16))
         self.settings_pill = Pill(card.header, "Waiting")
@@ -254,7 +262,7 @@ class StreamOptimizerApp(ctk.CTk):
         ctk.CTkLabel(body, text="In OBS: Settings > Output (Output Mode: Advanced) > Streaming for the encoder, Settings > Video for resolution and FPS.",
                      font=font(12), text_color=COLORS["muted"], anchor="w").grid(row=2, column=0, columnspan=4, sticky="ew", padx=4, pady=(6, 0))
 
-    def _build_notes_card(self, master) -> None:
+    def _build_notes_card(self, master: Misc) -> None:
         card = Card(master, "Notes")
         card.grid(row=2, column=0, columnspan=2, sticky="nsew")
         self.notes = ctk.CTkScrollableFrame(card.body, fg_color="transparent", height=150)
@@ -263,22 +271,14 @@ class StreamOptimizerApp(ctk.CTk):
         self.notes.bind("<Configure>", self._rewrap_notes)
         self._render_notes([("info", "Scan your hardware and run a speed test, then generate your settings.")])
 
-    def _post(self, kind: str, payload: object = None) -> None:
-        # worker threads never touch widgets, they only push events here
-        self.events.put((kind, payload))
+    def _post(self, callback: Callable[[], None]) -> None:
+        # worker threads never touch widgets, they queue a callback that runs on the tk thread
+        self._events.put(callback)
 
     def _poll_events(self) -> None:
-        handlers = {
-            "scan_done": self._on_scan_done,
-            "scan_failed": self._on_scan_failed,
-            "speed_progress": self._on_speed_progress,
-            "speed_done": self._on_speed_done,
-            "speed_failed": self._on_speed_failed,
-        }
         try:
             while True:
-                kind, payload = self.events.get_nowait()
-                handlers[kind](payload)
+                self._events.get_nowait()()
         except queue.Empty:
             pass
         self._poll_id = self.after(80, self._poll_events)
@@ -302,10 +302,13 @@ class StreamOptimizerApp(ctk.CTk):
         if self.recommendation is not None:
             self._generate()
 
+    def _on_manual_return(self, _event: Event[Misc]) -> None:
+        self._generate()
+
     def _start_scan(self) -> None:
-        if "scan" in self.busy:
+        if "scan" in self._running:
             return
-        self.busy.add("scan")
+        self._running.add("scan")
         self.scan_button.configure(state="disabled", text="1   Scanning...")
         self.hw_pill.set("Scanning", "busy")
         self._set_status("Reading CPU, RAM and GPU information...")
@@ -313,12 +316,15 @@ class StreamOptimizerApp(ctk.CTk):
 
     def _scan_worker(self) -> None:
         try:
-            self._post("scan_done", scan_system())
+            system = scan_system()
         except Exception as exc:
-            self._post("scan_failed", str(exc) or exc.__class__.__name__)
+            message = str(exc) or exc.__class__.__name__
+            self._post(lambda: self._on_scan_failed(message))
+            return
+        self._post(lambda: self._on_scan_done(system))
 
     def _on_scan_done(self, system: SystemInfo) -> None:
-        self.busy.discard("scan")
+        self._running.discard("scan")
         self.system = system
         self.scan_button.configure(state="normal", text="1   Scan Hardware")
 
@@ -339,16 +345,16 @@ class StreamOptimizerApp(ctk.CTk):
             self._generate()
 
     def _on_scan_failed(self, message: str) -> None:
-        self.busy.discard("scan")
+        self._running.discard("scan")
         self.scan_button.configure(state="normal", text="1   Scan Hardware")
         self.hw_pill.set("Failed", "critical")
         self.hw_error.configure(text=f"Hardware scan failed: {message}")
         self._set_status("Hardware scan failed. Try again, or restart the app.", "critical")
 
     def _start_speed_test(self) -> None:
-        if "speed" in self.busy:
+        if "speed" in self._running:
             return
-        self.busy.add("speed")
+        self._running.add("speed")
         self.speed_button.configure(state="disabled", text="2   Testing...")
         self.net_pill.set("Testing", "busy")
         self.progress.set(0)
@@ -361,15 +367,21 @@ class StreamOptimizerApp(ctk.CTk):
 
     def _speed_worker(self) -> None:
         try:
-            result = run_speed_test(lambda stage, fraction, measured: self._post("speed_progress", (stage, fraction, measured)))
-            self._post("speed_done", result)
+            result = run_speed_test(self._report_speed)
         except SpeedTestError as exc:
-            self._post("speed_failed", exc.message)
+            message = exc.message
+            self._post(lambda: self._on_speed_failed(message))
+            return
         except Exception as exc:
-            self._post("speed_failed", f"Unexpected error during the speed test: {exc}")
+            message = f"Unexpected error during the speed test: {exc}"
+            self._post(lambda: self._on_speed_failed(message))
+            return
+        self._post(lambda: self._on_speed_done(result))
 
-    def _on_speed_progress(self, payload) -> None:
-        stage, fraction, measured = payload
+    def _report_speed(self, stage: str, fraction: float, measured: Dict[str, float]) -> None:
+        self._post(lambda: self._on_speed_progress(stage, fraction, measured))
+
+    def _on_speed_progress(self, stage: str, fraction: float, measured: Dict[str, float]) -> None:
         text, start, end = STAGES.get(stage, (stage, 0.0, 0.0))
         self.progress.set(start + (end - start) * fraction)
         suffix = f"  {int(fraction * 100)}%" if stage in ("download", "upload") else ""
@@ -382,7 +394,7 @@ class StreamOptimizerApp(ctk.CTk):
                 self.metrics[key].configure(text=fmt.format(value))
 
     def _on_speed_done(self, result: SpeedTestResult) -> None:
-        self.busy.discard("speed")
+        self._running.discard("speed")
         self.speed = result
         self.speed_button.configure(state="normal", text="2   Run Speed Test")
         self.progress.set(1)
@@ -395,7 +407,7 @@ class StreamOptimizerApp(ctk.CTk):
             self._generate()
 
     def _on_speed_failed(self, message: str) -> None:
-        self.busy.discard("speed")
+        self._running.discard("speed")
         self.speed_button.configure(state="normal", text="2   Run Speed Test")
         self.progress.set(0)
         self.net_pill.set("Failed", "critical")
@@ -404,7 +416,7 @@ class StreamOptimizerApp(ctk.CTk):
         self._set_status("Speed test failed.", "critical")
 
     def _upload_source(self) -> Tuple[Optional[float], Optional[float], str]:
-        raw = self.manual_entry.get().strip().replace(",", ".")
+        raw = str(self.manual_entry.get()).strip().replace(",", ".")
         ping = self.speed.ping_ms if self.speed else None
         if raw:
             try:
@@ -470,7 +482,7 @@ class StreamOptimizerApp(ctk.CTk):
             label.grid(row=0, column=1, sticky="w", padx=(0, 12), pady=8)
             self.note_labels.append(label)
 
-    def _rewrap_notes(self, event) -> None:
+    def _rewrap_notes(self, event: Event[Misc]) -> None:
         for label in self.note_labels:
             label.configure(wraplength=max(event.width - 140, 300))
 

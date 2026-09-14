@@ -152,7 +152,7 @@ def _tier_index(label: str) -> int:
 def recommend(platform_key: str, system: SystemInfo, upload_mbps: float, ping_ms: Optional[float] = None) -> Recommendation:
     if platform_key not in PLATFORMS:
         raise ValueError(f"unknown platform: {platform_key}")
-    if upload_mbps is None or upload_mbps <= 0:
+    if upload_mbps <= 0:
         raise ValueError("upload speed must be greater than zero")
 
     platform = PLATFORMS[platform_key]
