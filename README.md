@@ -8,11 +8,24 @@ Built with Python and [CustomTkinter](https://github.com/TomSchimansky/CustomTki
 
 - **Platform presets** for Twitch, Kick, YouTube and a generic "Other" option, each with its own bitrate ceiling.
 - **Hardware scan**: CPU model, core and thread count, RAM, GPU model, and whether a hardware encoder is available (NVIDIA NVENC, AMD AMF, Intel QuickSync).
-- **Real speed test** using speedtest.net servers (download, upload, ping) with live progress. The UI stays responsive while it runs. Nearby servers are pinged with the same PING/PONG check the official Speedtest apps use, and the test runs against the one with the lowest latency.
+- **Real speed test** against speedtest.net servers (download, upload, ping) with live readings. The UI stays responsive while it runs. See [How the speed test works](#how-the-speed-test-works).
 - **Recommended OBS settings** built from your platform, hardware and upload speed, plus warnings when something will hold your stream back.
 - **Recommended ingest server** for the selected platform. Twitch servers are ranked by measured latency, YouTube shows its primary ingest, and Kick shows how its automatic route compares with your nearest region. Each result gets a latency rating: Good up to 100 ms, Fair up to 200 ms, High latency above that.
 - **Manual upload input** for when the speed test cannot reach a server, or when you already know your upload speed.
 - **Copy to clipboard** so you can keep the settings next to OBS.
+
+## How the speed test works
+
+The test lives in `modules/speed_test.py` and talks to speedtest.net servers with the same TCP protocol the official Speedtest apps use (`PING`, `DOWNLOAD`, `UPLOAD` on the server's test port).
+
+1. The nearest servers come from the same list the speedtest.net website uses. If that list is unavailable, speedtest-cli's server list is used instead.
+2. Every server is pinged five times, and the test runs against the one with the lowest median ping.
+3. Download and upload each run for 8 seconds over 4 parallel connections. The first 2 seconds are ignored, because TCP is still speeding up and socket buffers are still filling.
+4. If a connection drops, the test is repeated on the next server instead of reporting a speed that is too low.
+5. A result under 5 Mbps is measured again on a second server, and the higher reading is used. A single overloaded server should not push you down to 480p.
+6. If the speed moves around a lot during the test, the result is flagged so you know to run it again.
+
+speedtest-cli's own measurement is not used for download and upload. Many Ookla servers answer its legacy `upload.php` request with a redirect that it silently counts as a failed upload, which can show an upload speed close to zero.
 
 ## How the recommendations work
 
@@ -52,7 +65,7 @@ Each tier also has a sensible upper bitrate. For example, 720p30 is not given 8,
 
 NVENC uses `P5: Slow (Good Quality)` on RTX cards and `P4: Medium` on older ones. AMF uses `Quality` on RX 5000 and newer, and `Balanced` otherwise. Every recommendation uses CBR rate control, the High profile, and a 2 second keyframe interval.
 
-**Ingest server.** When you run the speed test or generate settings, the tool measures the TCP handshake time to the platform's ingest servers. No stream key is needed.
+**Ingest server.** After the speed test, or when you generate settings, the tool measures the TCP handshake time to the platform's ingest servers. No stream key is needed. Each server is probed several times and the fastest handshake counts, because network congestion can only add delay. The three fastest servers get a second, longer round so close calls don't flip between runs. Servers within 8 ms of each other count as equally fast. The check never runs during the speed test, because a busy line would inflate every latency.
 
 | Platform | What is checked | Recommendation |
 |----------|-----------------|----------------|

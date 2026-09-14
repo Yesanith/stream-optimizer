@@ -42,6 +42,9 @@ class IngestBox(ctk.CTkFrame):
     def show_idle(self, platform: Platform) -> None:
         self._show(platform, "-", "Checked when you run the speed test or generate settings.")
 
+    def show_waiting(self, platform: Platform) -> None:
+        self._show(platform, "Waiting for the speed test", "Server latency is measured once the line is idle again.")
+
     def show_checking(self, platform: Platform) -> None:
         self._show(platform, "Checking...", f"Measuring latency to {platform.name} ingest servers.")
 
@@ -111,10 +114,14 @@ class ConnectionCard(Card):
         self._show_metrics(measured.get("download_mbps"), measured.get("upload_mbps"), measured.get("ping_ms"))
 
     def show_result(self, result: SpeedTestResult) -> None:
-        self._pill.set("Done", "ok")
         self._progress.set(1)
         self._show_metrics(result.download_mbps, result.upload_mbps, result.ping_ms)
-        self._stage.configure(text="Speed test finished.", text_color=COLORS["muted"])
+        if result.warnings:
+            self._pill.set("Check notes", "warning")
+            self._stage.configure(text="Speed test finished, but part of the reading may be off. See the notes below.", text_color=TONES["warning"][1])
+        else:
+            self._pill.set("Done", "ok")
+            self._stage.configure(text="Speed test finished.", text_color=COLORS["muted"])
         self._server.configure(text=f"Server: {result.server}")
 
     def show_error(self, message: str) -> None:

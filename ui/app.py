@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
@@ -12,7 +12,7 @@ from modules.platforms import PLATFORMS
 from modules.recommender import Recommendation, recommend
 from modules.speed_test import SpeedTestResult, run_speed_test
 from modules.system_info import SystemInfo, scan_system
-from ui.cards import ConnectionCard, HardwareCard, NotesCard, SettingsCard
+from ui.cards import ConnectionCard, HardwareCard, Note, NotesCard, SettingsCard
 from ui.sidebar import Sidebar
 from ui.tasks import TaskRunner
 from ui.theme import APP_NAME, COLORS, TONES
@@ -81,10 +81,10 @@ class StreamOptimizerApp(ctk.CTk):
             return
         self.sidebar.set_testing(True)
         self.connection.show_testing()
-        self.set_status("Speed test running, this usually takes 20-40 seconds.")
+        self.set_status("Speed test running, this takes about 20 seconds.")
         self.ingest.clear()
         self.ingest_errors.clear()
-        self._check_ingest(self.sidebar.platform_key)
+        self._render_ingest()
 
     def generate(self) -> None:
         if self.system is None:
@@ -105,7 +105,9 @@ class StreamOptimizerApp(ctk.CTk):
 
         self.recommendation = rec
         self.settings.show(rec)
-        self.notes.show([(a.level, a.message) for a in rec.advice] or [("ok", "No issues found. These settings should run smoothly.")])
+        notes: List[Note] = [("warning", w) for w in self.speed.warnings] if self.speed and source == "speed test" else []
+        notes += [(a.level, a.message) for a in rec.advice]
+        self.notes.show(notes or [("ok", "No issues found. These settings should run smoothly.")])
         self.set_status(f"Settings generated for {rec.platform.name} using {upload:g} Mbps upload from {source}.")
         self._check_ingest(rec.platform.key)
 
@@ -156,16 +158,23 @@ class StreamOptimizerApp(ctk.CTk):
         self.speed = result
         self.sidebar.set_testing(False)
         self.connection.show_result(result)
-        self.set_status("Speed test finished.")
+        self.set_status("Speed test finished." if not result.warnings else "Speed test finished with warnings, see the notes.",
+                        "neutral" if not result.warnings else "warning")
+        if self.recommendation is None and result.warnings:
+            self.notes.show([("warning", w) for w in result.warnings])
+        self._check_ingest(self.sidebar.platform_key)
         self._refresh_recommendation()
 
     def _on_speed_failed(self, message: str) -> None:
         self.sidebar.set_testing(False)
         self.connection.show_error(message)
         self.set_status("Speed test failed.", "critical")
+        self._check_ingest(self.sidebar.platform_key)
 
     def _check_ingest(self, key: str) -> None:
-        if key in self.ingest:
+        # a line saturated by the speed test inflates every latency and can pick the wrong server
+        if key in self.ingest or self.tasks.is_running("speed"):
+            self._render_ingest()
             return
 
         def work() -> IngestReport:
@@ -193,6 +202,8 @@ class StreamOptimizerApp(ctk.CTk):
             box.show_error(platform, self.ingest_errors[key])
         elif key in self.ingest:
             box.show_report(platform, self.ingest[key])
+        elif self.tasks.is_running("speed"):
+            box.show_waiting(platform)
         else:
             box.show_idle(platform)
 
