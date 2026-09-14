@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from modules.errors import OptimizerError
-from modules.net import USER_AGENT, fetch_json, median, parallel_map
+from modules.net import USER_AGENT, ProtocolError, classify_error, failure_message, fetch_json, median, most_common, parallel_map
 
 try:
     import speedtest
@@ -62,6 +62,8 @@ class Transfer:
     mbps: float
     stable: bool
     failed_streams: int
+    # most common reason streams failed, none when every stream held up
+    failure: Optional[str] = None
 
 
 @dataclass
@@ -89,76 +91,101 @@ def _servers_from_entries(entries: List[Dict[str, Any]]) -> List[SpeedServer]:
     return servers
 
 
-def _nearby_servers(timeout: float) -> List[SpeedServer]:
+def fetch_server_list(timeout: float) -> List[SpeedServer]:
+    # raises the underlying network error, callers need it to tell a timeout from a refused connection
     user_agent = speedtest.build_user_agent() if speedtest is not None else USER_AGENT
+    payload = fetch_json(SERVER_API, timeout, user_agent)
+    entries = [cast(Dict[str, Any], s) for s in cast(List[Any], payload) if isinstance(s, dict)] if isinstance(payload, list) else []
+    servers = _servers_from_entries(entries)
+    if not servers:
+        raise ProtocolError("the server list had no usable servers")
+    return servers
+
+
+def _nearby_servers(timeout: float) -> List[SpeedServer]:
     try:
-        payload = fetch_json(SERVER_API, timeout, user_agent)
-        servers = _servers_from_entries([cast(Dict[str, Any], s) for s in cast(List[Any], payload) if isinstance(s, dict)])
-        if servers:
-            return servers
-    except Exception:
-        pass
+        return fetch_server_list(timeout)
+    except Exception as exc:
+        api_failure, api_detail = classify_error(exc), str(exc)
 
     # the api is down or blocked, speedtest-cli's own list is less accurate but still usable
-    message = "Could not load the speed test server list. Check your internet connection or firewall."
-    if speedtest is None:
-        raise SpeedTestError(message)
-    last_error: Optional[Exception] = None
-    for secure in (True, False):
-        try:
-            client: Any = speedtest.Speedtest(timeout=int(timeout), secure=secure)
-            client.get_servers()
-            servers = _servers_from_entries([cast(Dict[str, Any], s) for s in client.get_closest_servers(limit=10)])
-            if servers:
-                return servers
-        except Exception as exc:
-            last_error = exc
-    raise SpeedTestError(message, str(last_error))
+    fallback_detail = "speedtest-cli is not installed"
+    if speedtest is not None:
+        for secure in (True, False):
+            try:
+                client: Any = speedtest.Speedtest(timeout=int(timeout), secure=secure)
+                client.get_servers()
+                servers = _servers_from_entries([cast(Dict[str, Any], s) for s in client.get_closest_servers(limit=10)])
+                if servers:
+                    return servers
+            except Exception as exc:
+                fallback_detail = str(exc)
+    # speedtest-cli wraps errors in its own types, the api failure says more about the cause
+    raise SpeedTestError(failure_message("Could not load the speed test server list from speedtest.net.", api_failure),
+                         f"{api_detail}; fallback: {fallback_detail}")
 
 
-def ping_server(host: str, port: int, samples: int = PING_SAMPLES, timeout: float = 2) -> Optional[float]:
-    # ookla servers answer PING with PONG on the test port, same latency check the official apps do
+def _expect(reader: io.BufferedReader, prefix: bytes) -> None:
+    line = reader.readline()
+    if not line:
+        raise ConnectionResetError("the connection closed before the server answered")
+    if not line.startswith(prefix):
+        raise ProtocolError(f"expected {prefix!r}, got {line[:40]!r}")
+
+
+def probe_server(host: str, port: int, samples: int = PING_SAMPLES, timeout: float = 2) -> Tuple[Optional[float], Optional[str]]:
+    # latency or failure kind. ookla servers answer PING with PONG on the test port, same check the official apps do
     times: List[float] = []
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             reader = sock.makefile("rb")
             sock.sendall(b"HI\n")
-            if not reader.readline().startswith(b"HELLO"):
-                return None
+            _expect(reader, b"HELLO")
             for _ in range(samples):
                 start = time.perf_counter()
                 sock.sendall(b"PING %d\n" % int(time.time() * 1000))
-                if not reader.readline().startswith(b"PONG"):
-                    return None
+                _expect(reader, b"PONG")
                 times.append((time.perf_counter() - start) * 1000)
-    except (OSError, ValueError):
-        return None
-    return median(times)
+    except (OSError, ValueError) as exc:
+        return None, classify_error(exc)
+    return median(times), None
 
 
-def _ping(server: SpeedServer) -> Optional[float]:
-    return ping_server(server.host, server.port)
+def ping_server(host: str, port: int, samples: int = PING_SAMPLES, timeout: float = 2) -> Optional[float]:
+    return probe_server(host, port, samples, timeout)[0]
+
+
+def _probe(server: SpeedServer) -> Tuple[Optional[float], Optional[str]]:
+    return probe_server(server.host, server.port)
 
 
 def _rank_by_ping(servers: List[SpeedServer]) -> List[SpeedServer]:
-    for server, ping in zip(servers, parallel_map(_ping, servers)):
+    failures: List[str] = []
+    for server, (ping, failure) in zip(servers, parallel_map(_probe, servers)):
         server.ping_ms = ping
-    return sorted((s for s in servers if s.ping_ms is not None), key=lambda s: s.ping_ms or 0.0)
+        if failure is not None:
+            failures.append(failure)
+    ranked = sorted((s for s in servers if s.ping_ms is not None), key=lambda s: s.ping_ms or 0.0)
+    if not ranked:
+        raise SpeedTestError(failure_message("None of the nearby speed test servers answered on their test port.", most_common(failures)))
+    return ranked
 
 
 class _Meter:
     def __init__(self, streams: int) -> None:
         self.counts = [0] * streams
         self.failures = 0
+        self.kinds: List[str] = []
         self._lock = threading.Lock()
 
     def add(self, slot: int, amount: int) -> None:
         # each slot has a single writer thread, the sampler reading a slightly stale total is fine
         self.counts[slot] += amount
 
-    def fail(self) -> None:
+    def fail(self, kind: str) -> None:
         with self._lock:
             self.failures += 1
+            self.kinds.append(kind)
 
     def total(self) -> int:
         return sum(self.counts)
@@ -169,8 +196,7 @@ def _open(server: SpeedServer) -> Tuple[socket.socket, io.BufferedReader]:
     reader = sock.makefile("rb")
     try:
         sock.sendall(b"HI\n")
-        if not reader.readline().startswith(b"HELLO"):
-            raise OSError("server did not answer HI")
+        _expect(reader, b"HELLO")
     except OSError:
         sock.close()
         raise
@@ -180,8 +206,8 @@ def _open(server: SpeedServer) -> Tuple[socket.socket, io.BufferedReader]:
 def _download_stream(server: SpeedServer, slot: int, meter: _Meter, stop: threading.Event) -> None:
     try:
         sock, _ = _open(server)
-    except OSError:
-        meter.fail()
+    except OSError as exc:
+        meter.fail(classify_error(exc))
         return
     with sock:
         try:
@@ -193,12 +219,12 @@ def _download_stream(server: SpeedServer, slot: int, meter: _Meter, stop: thread
                         return
                     data = sock.recv(min(IO_BYTES, remaining))
                     if not data:
-                        raise OSError("server closed the connection")
+                        raise ConnectionResetError("server closed the connection")
                     remaining -= len(data)
                     meter.add(slot, len(data))
-        except OSError:
+        except OSError as exc:
             if not stop.is_set():
-                meter.fail()
+                meter.fail(classify_error(exc))
 
 
 def _upload_body() -> bytes:
@@ -210,8 +236,8 @@ def _upload_body() -> bytes:
 def _upload_stream(server: SpeedServer, slot: int, meter: _Meter, stop: threading.Event, body: bytes) -> None:
     try:
         sock, reader = _open(server)
-    except OSError:
-        meter.fail()
+    except OSError as exc:
+        meter.fail(classify_error(exc))
         return
     view = memoryview(body)
     with sock:
@@ -223,11 +249,10 @@ def _upload_stream(server: SpeedServer, slot: int, meter: _Meter, stop: threadin
                     piece = view[offset:offset + IO_BYTES]
                     sock.sendall(piece)
                     meter.add(slot, len(piece))
-                if not reader.readline().startswith(b"OK"):
-                    raise OSError("server did not confirm the upload")
-        except OSError:
+                _expect(reader, b"OK")
+        except OSError as exc:
             if not stop.is_set():
-                meter.fail()
+                meter.fail(classify_error(exc))
 
 
 def _rate(samples: List[Tuple[float, int]]) -> float:
@@ -235,15 +260,15 @@ def _rate(samples: List[Tuple[float, int]]) -> float:
     return (last - first) * 8 / (end - start) / 1e6 if end > start else 0.0
 
 
-def _summarize(samples: List[Tuple[float, int]], failures: int) -> Transfer:
+def _summarize(samples: List[Tuple[float, int]], failures: int, failure: Optional[str] = None) -> Transfer:
     steady = [s for s in samples if s[0] >= WARMUP_SECONDS]
     if len(steady) < 2:
-        return Transfer(0.0, False, failures)
+        return Transfer(0.0, False, failures, failure)
     mbps = _rate(steady)
     step = max(round(0.5 / SAMPLE_SECONDS), 1)
     windows = [_rate(steady[i:i + step + 1]) for i in range(0, len(steady) - step, step)]
     stable = len(windows) < 3 or mbps <= 0 or statistics.pstdev(windows) / mbps <= UNSTABLE_VARIATION
-    return Transfer(mbps, stable, failures)
+    return Transfer(mbps, stable, failures, failure)
 
 
 def _transfer(server: SpeedServer, direction: str, on_sample: Callable[[float, Optional[float]], None]) -> Transfer:
@@ -274,7 +299,7 @@ def _transfer(server: SpeedServer, direction: str, on_sample: Callable[[float, O
         stop.set()
         for thread in threads:
             thread.join(timeout=2)
-    return _summarize(samples, meter.failures)
+    return _summarize(samples, meter.failures, most_common(meter.kinds) if meter.kinds else None)
 
 
 def _measure_direction(ranked: List[SpeedServer], direction: str, report: ProgressCallback,
@@ -291,8 +316,11 @@ def _measure_direction(ranked: List[SpeedServer], direction: str, report: Progre
 
     clean: List[Tuple[Transfer, SpeedServer]] = []
     partial: List[Tuple[Transfer, SpeedServer]] = []
+    failures: List[str] = []
     for server in ranked[:MAX_ATTEMPTS]:
         transfer = _transfer(server, direction, on_sample)
+        if transfer.failure is not None:
+            failures.append(transfer.failure)
         if transfer.mbps <= 0:
             continue
         (clean if transfer.failed_streams == 0 else partial).append((transfer, server))
@@ -302,7 +330,8 @@ def _measure_direction(ranked: List[SpeedServer], direction: str, report: Progre
 
     pool = clean or partial
     if not pool:
-        raise SpeedTestError(f"The {direction} test could not get data through to any server. Check your connection and try again.")
+        # no data and no socket error means the traffic vanished, which behaves like a timeout
+        raise SpeedTestError(failure_message(f"The {direction} test could not get data through to any server.", most_common(failures, "timeout")))
     transfer, server = max(pool, key=lambda pair: pair[0].mbps)
 
     warnings: List[str] = []
@@ -328,8 +357,6 @@ def run_speed_test(progress: Optional[ProgressCallback] = None, timeout: float =
 
     report("server", 0.0, dict(measured))
     ranked = _rank_by_ping(servers)
-    if not ranked:
-        raise SpeedTestError("No speed test server answered. A firewall may be blocking port 8080, try again in a moment.")
     measured["ping_ms"] = ranked[0].ping_ms or 0.0
 
     download, down_server, down_warnings = _measure_direction(ranked, "download", report, measured)

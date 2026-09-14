@@ -25,6 +25,9 @@ class NotesCard(Card):
         self._list.grid_columnconfigure(0, weight=1)
         self._labels: List[ctk.CTkLabel] = []
         fit_wraplength(self._list, self._labels, padding=TAG_SPACE, minimum=300)
+        self.show_intro()
+
+    def show_intro(self) -> None:
         self.show([("info", "Scan your hardware and run a speed test, then generate your settings.")])
 
     def show(self, notes: Sequence[Note]) -> None:

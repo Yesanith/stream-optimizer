@@ -15,6 +15,7 @@ from ui.widgets import Card, Metric, Pill, fit_wraplength, text_label
 
 # label, overall progress at stage start, overall progress at stage end
 STAGES: Dict[str, Tuple[str, float, float]] = {
+    "preflight": ("Checking your connection", 0.00, 0.00),
     "connecting": ("Connecting to speedtest.net", 0.00, 0.05),
     "server": ("Finding the closest server", 0.05, 0.15),
     "download": ("Measuring download", 0.15, 0.55),
@@ -124,8 +125,8 @@ class ConnectionCard(Card):
             self._stage.configure(text="Speed test finished.", text_color=COLORS["muted"])
         self._server.configure(text=f"Server: {result.server}")
 
-    def show_error(self, message: str) -> None:
-        self._pill.set("Failed", "critical")
+    def show_error(self, message: str, pill: str = "Failed") -> None:
+        self._pill.set(pill, "critical")
         self._progress.set(0)
         self._stage.configure(text=message, text_color=TONES["critical"][1])
         self._server.configure(text="You can type your upload speed into the manual field in the sidebar instead.")

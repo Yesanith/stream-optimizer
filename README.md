@@ -8,7 +8,7 @@ Built with Python and [CustomTkinter](https://github.com/TomSchimansky/CustomTki
 
 - **Platform presets** for Twitch, Kick, YouTube and a generic "Other" option, each with its own bitrate ceiling.
 - **Hardware scan**: CPU model, core and thread count, RAM, GPU model, and whether a hardware encoder is available (NVIDIA NVENC, AMD AMF, Intel QuickSync).
-- **Real speed test** against speedtest.net servers (download, upload, ping) with live readings. The UI stays responsive while it runs. See [How the speed test works](#how-the-speed-test-works).
+- **Real speed test** against speedtest.net servers (download, upload, ping) with live readings. The UI stays responsive while it runs. A quick connection check runs first and explains what to check when something blocks the test. See [How the speed test works](#how-the-speed-test-works).
 - **Recommended OBS settings** built from your platform, hardware and upload speed, plus warnings when something will hold your stream back.
 - **Recommended ingest server** for the selected platform. Twitch servers are ranked by measured latency, YouTube shows its primary ingest, and Kick shows how its automatic route compares with your nearest region. Each result gets a latency rating: Good up to 100 ms, Fair up to 200 ms, High latency above that.
 - **Manual upload input** for when the speed test cannot reach a server, or when you already know your upload speed.
@@ -18,6 +18,8 @@ Built with Python and [CustomTkinter](https://github.com/TomSchimansky/CustomTki
 ## How the speed test works
 
 The test lives in `modules/speed_test.py` and talks to speedtest.net servers with the same TCP protocol the official Speedtest apps use (`PING`, `DOWNLOAD`, `UPLOAD` on the server's test port).
+
+Before the test, a quick connection check (`modules/network_check.py`) runs for a few seconds. It opens a few TCP connections to Cloudflare's 1.1.1.1, loads the speedtest.net server list and sends `HI` to the three nearest test servers, with 2.5 to 3 second timeouts. If speedtest.net or its test servers can't be reached, the app explains which step failed and what to check, and asks whether to run the test anyway. Lost connections or unusually slow connection setup don't stop the test, but they are shown as warnings next to the result.
 
 1. The nearest servers come from the same list the speedtest.net website uses. If that list is unavailable, speedtest-cli's server list is used instead.
 2. Every server is pinged five times, and the test runs against the one with the lowest median ping.
@@ -153,7 +155,8 @@ stream-optimizer/
 │   ├── platforms.py         # platform list with bitrate caps and max resolution
 │   ├── recommender.py       # platform + hardware + upload speed -> OBS settings
 │   ├── system_info.py       # CPU / RAM / GPU detection and hardware encoder support
-│   ├── speed_test.py        # speedtest-cli wrapper, picks the closest server by latency
+│   ├── speed_test.py        # speed test over Ookla's TCP protocol, speedtest-cli only as a fallback server list
+│   ├── network_check.py     # quick connection check that runs before the speed test
 │   ├── ingest.py            # platform ingest server lookup and latency rating
 │   ├── obs_profile.py       # writes the recommendation as an importable OBS profile
 │   ├── net.py               # shared helpers: JSON fetch, TCP latency, parallel probes
@@ -174,7 +177,30 @@ stream-optimizer/
 
 ## Troubleshooting
 
-- **The speed test fails.** speedtest.net is sometimes blocked by firewalls, VPNs or school and office networks. Try again, turn off the VPN, or use the manual upload field.
+### The speed test fails or gives odd results
+
+Before every speed test the app runs a quick connection check. If the check fails, the app tells you which step failed and asks whether to run the test anyway. If the speed test itself fails, the message says whether the connection timed out, was refused or was cut off, because each points to a different cause.
+
+| The message says | What usually causes it |
+|------------------|------------------------|
+| timed out | Traffic is dropped without an answer: a firewall rule, a DPI bypass tool or a VPN |
+| refused | A firewall or antivirus rule, a VPN or a proxy rejects the connection |
+| cut off | A DPI bypass tool, a VPN or an antivirus web filter resets the connection |
+| could not be looked up | No connection, or DNS settings changed by a VPN or DPI bypass tool |
+| secure connection failed | A proxy, antivirus HTTPS scanning or a DPI bypass tool |
+| something other than the expected server answered | A proxy, a Wi-Fi login page or a web filter intercepts the traffic |
+
+If the test keeps failing, check these:
+
+- **VPNs, proxies and DPI bypass tools** such as GoodbyeDPI. These tools reroute or rewrite traffic, and they are often set up to handle only a short list of apps, ports or domains, for example only Discord. Traffic outside that list can be treated differently, so a newly installed program, this one included, may be dropped or broken by default. Add Python (`python.exe` and `pythonw.exe`, or the packaged `.exe`) to the tool's whitelist or exception list, or turn the tool off while the speed test runs. The test uses `speedtest.net` for the server list and port 8080 on the test servers.
+- **Windows Firewall.** By default it allows outgoing connections, and this app never accepts incoming ones, so you normally won't see an "Allow access" prompt for it. An outbound rule or a third party firewall can still block Python. Look under Windows Defender Firewall > Advanced settings > Outbound Rules.
+- **Antivirus and security suites.** Web protection and HTTPS scanning can block or break the test connections. Add an exception for Python, or pause web protection during the test.
+- **School, office, hotel and public Wi-Fi.** These networks often block speed test sites or show a login page first.
+
+If you can't change any of this, type your upload speed into the manual field. A number from any other speed test works.
+
+### Other problems
+
 - **No GPU is detected.** For NVIDIA, make sure the driver is installed and `nvidia-smi` runs in a terminal. On Windows, AMD and Intel GPUs are read through WMI. The tool still works and falls back to x264.
 - **`ModuleNotFoundError: No module named 'distutils'`.** GPUtil needs `distutils`, which Python 3.12 removed. `requirements.txt` installs `setuptools`, which provides it. If the problem remains, the app still detects NVIDIA GPUs through `nvidia-smi`.
 
