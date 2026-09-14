@@ -2,16 +2,25 @@
 # pyright: reportMissingTypeStubs=false
 from __future__ import annotations
 
+import json
+import socket
 import threading
+import time
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 try:
     import speedtest
 except Exception:
     speedtest = None
 
+
+# same geo aware endpoint the speedtest.net website uses
+SERVER_API = "https://www.speedtest.net/api/js/servers?engine=js&limit=10&https_functional=true"
+PING_SAMPLES = 5
 
 # stage name, progress 0..1 within the stage, values measured so far
 ProgressCallback = Callable[[str, float, Dict[str, float]], None]
@@ -47,6 +56,65 @@ def _connect(module: ModuleType, timeout: int) -> Any:
     raise SpeedTestError("Could not reach speedtest.net. Check your internet connection or firewall.", str(last_error))
 
 
+def _nearby_servers(module: ModuleType, client: Any, timeout: int) -> List[Dict[str, Any]]:
+    # speedtest-cli's own static list sometimes returns servers from another country, so prefer the api
+    try:
+        request = urllib.request.Request(SERVER_API, headers={"User-Agent": module.build_user_agent()})
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = cast(List[Any], json.loads(response.read().decode("utf-8")))
+        entries = [cast(Dict[str, Any], s) for s in payload if isinstance(s, dict)]
+        servers = [s for s in entries if s.get("host") and s.get("url")]
+        if servers:
+            return servers
+    except Exception:
+        pass
+
+    try:
+        client.get_servers()
+        return list(client.get_closest_servers(limit=10))
+    except Exception as exc:
+        raise SpeedTestError("Could not load the speed test server list. Try again in a moment.", str(exc))
+
+
+def ping_server(host: str, samples: int = PING_SAMPLES, timeout: float = 2) -> Optional[float]:
+    # ookla servers answer PING with PONG on the test port, same latency check the official apps do
+    name, _, port = host.rpartition(":")
+    times: List[float] = []
+    try:
+        with socket.create_connection((name, int(port)), timeout=timeout) as sock:
+            reader = sock.makefile("rb")
+            sock.sendall(b"HI\n")
+            if not reader.readline().startswith(b"HELLO"):
+                return None
+            for _ in range(samples):
+                start = time.perf_counter()
+                sock.sendall(b"PING %d\n" % int(time.time() * 1000))
+                if not reader.readline().startswith(b"PONG"):
+                    return None
+                times.append((time.perf_counter() - start) * 1000)
+    except (OSError, ValueError):
+        return None
+    times.sort()
+    return times[len(times) // 2]
+
+
+def _pick_server(client: Any, servers: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], float]:
+    with ThreadPoolExecutor(max_workers=len(servers)) as pool:
+        futures = [pool.submit(ping_server, str(server["host"])) for server in servers]
+        pings = [future.result() for future in futures]
+
+    reachable = [(ping, server) for ping, server in zip(pings, servers) if ping is not None]
+    if reachable:
+        ping, server = min(reachable, key=lambda pair: pair[0])
+        # only sets the transfer target, its http based latency number is ignored
+        client.get_best_server([server])
+        return server, ping
+
+    # no server spoke the ookla protocol, fall back to speedtest-cli's http latency check
+    fallback: Dict[str, Any] = client.get_best_server(servers)
+    return fallback, float(fallback.get("latency", 0.0))
+
+
 def _counter(report: ProgressCallback, stage: str, measured: Dict[str, float]) -> Callable[..., None]:
     lock = threading.Lock()
     finished = [0]
@@ -74,11 +142,12 @@ def run_speed_test(progress: Optional[ProgressCallback] = None, timeout: int = 1
     client = _connect(speedtest, timeout)
 
     report("server", 0.0, dict(measured))
+    servers = _nearby_servers(speedtest, client, timeout)
     try:
-        server: Dict[str, Any] = client.get_best_server()
+        server, ping = _pick_server(client, servers)
     except Exception as exc:
         raise SpeedTestError("No speed test server responded. Try again in a moment.", str(exc))
-    measured["ping_ms"] = float(server.get("latency", 0.0))
+    measured["ping_ms"] = ping
 
     try:
         report("download", 0.0, dict(measured))

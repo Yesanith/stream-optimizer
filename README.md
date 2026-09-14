@@ -8,7 +8,7 @@ Built with Python and [CustomTkinter](https://github.com/TomSchimansky/CustomTki
 
 - **Platform presets** for Twitch, Kick, YouTube and a generic "Other" option, each with its own bitrate ceiling.
 - **Hardware scan**: CPU model, core and thread count, RAM, GPU model, and whether a hardware encoder is available (NVIDIA NVENC, AMD AMF, Intel QuickSync).
-- **Real speed test** using speedtest.net servers (download, upload, ping) with live progress. The UI stays responsive while it runs.
+- **Real speed test** using speedtest.net servers (download, upload, ping) with live progress. The UI stays responsive while it runs. Nearby servers are pinged with the same PING/PONG check the official Speedtest apps use, and the test runs against the one with the lowest latency.
 - **Recommended OBS settings** built from your platform, hardware and upload speed, plus warnings when something will hold your stream back.
 - **Manual upload input** for when the speed test cannot reach a server, or when you already know your upload speed.
 - **Copy to clipboard** so you can keep the settings next to OBS.
