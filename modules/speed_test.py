@@ -2,15 +2,15 @@
 # pyright: reportMissingTypeStubs=false
 from __future__ import annotations
 
-import json
 import socket
 import threading
 import time
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+
+from modules.errors import OptimizerError
+from modules.net import fetch_json, median, parallel_map
 
 try:
     import speedtest
@@ -26,11 +26,8 @@ PING_SAMPLES = 5
 ProgressCallback = Callable[[str, float, Dict[str, float]], None]
 
 
-class SpeedTestError(Exception):
-    def __init__(self, message: str, detail: str = "") -> None:
-        super().__init__(message)
-        self.message = message
-        self.detail = detail
+class SpeedTestError(OptimizerError):
+    pass
 
 
 @dataclass
@@ -59,10 +56,8 @@ def _connect(module: ModuleType, timeout: int) -> Any:
 def _nearby_servers(module: ModuleType, client: Any, timeout: int) -> List[Dict[str, Any]]:
     # speedtest-cli's own static list sometimes returns servers from another country, so prefer the api
     try:
-        request = urllib.request.Request(SERVER_API, headers={"User-Agent": module.build_user_agent()})
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = cast(List[Any], json.loads(response.read().decode("utf-8")))
-        entries = [cast(Dict[str, Any], s) for s in payload if isinstance(s, dict)]
+        payload = fetch_json(SERVER_API, timeout, module.build_user_agent())
+        entries = [cast(Dict[str, Any], s) for s in cast(List[Any], payload) if isinstance(s, dict)]
         servers = [s for s in entries if s.get("host") and s.get("url")]
         if servers:
             return servers
@@ -94,15 +89,15 @@ def ping_server(host: str, samples: int = PING_SAMPLES, timeout: float = 2) -> O
                 times.append((time.perf_counter() - start) * 1000)
     except (OSError, ValueError):
         return None
-    times.sort()
-    return times[len(times) // 2]
+    return median(times)
+
+
+def _ping_entry(server: Dict[str, Any]) -> Optional[float]:
+    return ping_server(str(server["host"]))
 
 
 def _pick_server(client: Any, servers: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], float]:
-    with ThreadPoolExecutor(max_workers=len(servers)) as pool:
-        futures = [pool.submit(ping_server, str(server["host"])) for server in servers]
-        pings = [future.result() for future in futures]
-
+    pings = parallel_map(_ping_entry, servers)
     reachable = [(ping, server) for ping, server in zip(pings, servers) if ping is not None]
     if reachable:
         ping, server = min(reachable, key=lambda pair: pair[0])

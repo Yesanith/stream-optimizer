@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import List, Optional
 
+from modules.platforms import PLATFORMS, Platform
 from modules.system_info import SystemInfo
 
 
@@ -11,22 +12,6 @@ UPLOAD_USAGE = 0.70
 AUDIO_KBPS = 160
 MIN_VIDEO_KBPS = 300
 KEYFRAME_SECONDS = 2
-
-
-@dataclass(frozen=True)
-class Platform:
-    key: str
-    name: str
-    max_bitrate_kbps: int
-    max_height: int
-
-
-PLATFORMS: Dict[str, Platform] = {
-    "twitch": Platform("twitch", "Twitch", 8000, 1080),
-    "kick": Platform("kick", "Kick", 12000, 1080),
-    "youtube": Platform("youtube", "YouTube", 51000, 1440),
-    "other": Platform("other", "Other", 8000, 1080),
-}
 
 
 @dataclass(frozen=True)

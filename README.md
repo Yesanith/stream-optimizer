@@ -10,6 +10,7 @@ Built with Python and [CustomTkinter](https://github.com/TomSchimansky/CustomTki
 - **Hardware scan**: CPU model, core and thread count, RAM, GPU model, and whether a hardware encoder is available (NVIDIA NVENC, AMD AMF, Intel QuickSync).
 - **Real speed test** using speedtest.net servers (download, upload, ping) with live progress. The UI stays responsive while it runs. Nearby servers are pinged with the same PING/PONG check the official Speedtest apps use, and the test runs against the one with the lowest latency.
 - **Recommended OBS settings** built from your platform, hardware and upload speed, plus warnings when something will hold your stream back.
+- **Recommended ingest server** for the selected platform. Twitch servers are ranked by measured latency, YouTube shows its primary ingest, and Kick shows how its automatic route compares with your nearest region. Each result gets a latency rating: Good up to 100 ms, Fair up to 200 ms, High latency above that.
 - **Manual upload input** for when the speed test cannot reach a server, or when you already know your upload speed.
 - **Copy to clipboard** so you can keep the settings next to OBS.
 
@@ -50,6 +51,15 @@ Each tier also has a sensible upper bitrate. For example, 720p30 is not given 8,
 | ultra     | 12 cores or more        | 1080p60      | faster      | 1440p60                  |
 
 NVENC uses `P5: Slow (Good Quality)` on RTX cards and `P4: Medium` on older ones. AMF uses `Quality` on RX 5000 and newer, and `Balanced` otherwise. Every recommendation uses CBR rate control, the High profile, and a 2 second keyframe interval.
+
+**Ingest server.** When you run the speed test or generate settings, the tool measures the TCP handshake time to the platform's ingest servers. No stream key is needed.
+
+| Platform | What is checked | Recommendation |
+|----------|-----------------|----------------|
+| Twitch   | Every server from Twitch's public ingest list (`ingest.twitch.tv/ingests`) on port 1935 | The server with the lowest latency |
+| YouTube  | Primary and backup RTMPS ingest | Primary, backup only if the primary does not answer |
+| Kick     | Kick's Stream URL, plus the regional Amazon IVS ingests Kick is built on | Kick has no server list, so the tool shows how much slower its automatic route is than your nearest region |
+| Other    | Nothing | Use the URL your platform gives you |
 
 **Warnings** cover low or unusable upload speed, no hardware encoder, a weak CPU on x264, low RAM, high ping, and whether your upload, your hardware or the platform cap is what limits the result.
 
@@ -103,14 +113,27 @@ Changing the platform after generating updates the settings right away.
 
 ## Project structure
 
+The code is split into `modules/`, which has no GUI imports and can be used on its own, and `ui/`, which only renders and wires things together.
+
 ```
 stream-optimizer/
-├── main.py                  # CustomTkinter GUI, runs scans and tests on background threads
-├── modules/
-│   ├── __init__.py
-│   ├── recommender.py       # platform + hardware + upload speed -> OBS settings, no GUI imports
+├── main.py                  # entry point, starts the GUI
+├── modules/                 # core logic
+│   ├── platforms.py         # platform list with bitrate caps and max resolution
+│   ├── recommender.py       # platform + hardware + upload speed -> OBS settings
 │   ├── system_info.py       # CPU / RAM / GPU detection and hardware encoder support
-│   └── speed_test.py        # speedtest-cli wrapper with progress callbacks and readable errors
+│   ├── speed_test.py        # speedtest-cli wrapper, picks the closest server by latency
+│   ├── ingest.py            # platform ingest server lookup and latency rating
+│   ├── net.py               # shared helpers: JSON fetch, TCP latency, parallel probes
+│   └── errors.py            # base error with a user facing message
+├── ui/                      # CustomTkinter GUI
+│   ├── app.py               # main window, app state and the flow between steps
+│   ├── sidebar.py           # platform picker, step buttons, manual upload
+│   ├── cards/               # hardware, connection, settings and notes cards
+│   ├── widgets.py           # shared widgets: Card, Tile, Metric, Pill
+│   ├── tasks.py             # runs blocking work on threads, returns results on the Tk thread
+│   ├── theme.py             # colors and fonts
+│   └── window.py            # Windows fix for black boxes while resizing
 ├── requirements.txt
 ├── README.md
 ├── LICENSE
