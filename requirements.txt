@@ -1,0 +1,7 @@
+customtkinter>=5.2.0
+speedtest-cli>=2.1.3
+psutil>=5.9.0
+GPUtil>=1.4.0
+py-cpuinfo>=9.0.0
+# gputil imports distutils which was removed in python 3.12, setuptools ships a shim for it
+setuptools; python_version >= "3.12"
