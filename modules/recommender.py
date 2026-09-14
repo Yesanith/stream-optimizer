@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from modules.platforms import PLATFORMS, Platform
 from modules.system_info import SystemInfo
@@ -74,6 +74,8 @@ class Recommendation:
     encoder: str
     encoder_name: str
     preset: str
+    # the value obs stores for the preset, preset holds the label obs shows
+    preset_id: str
     video_kbps: int
     audio_kbps: int
     keyframe_s: int
@@ -117,12 +119,13 @@ def pick_encoder(system: SystemInfo) -> str:
     return "x264"
 
 
-def hardware_preset(encoder: str, system: SystemInfo) -> str:
+def hardware_preset(encoder: str, system: SystemInfo) -> Tuple[str, str]:
+    # obs setting value, label as obs shows it
     names = [g.name.upper() for g in system.gpus]
     if encoder == "nvenc":
-        return "P5: Slow (Good Quality)" if any("RTX" in n for n in names) else "P4: Medium"
+        return ("p5", "P5: Slow (Good Quality)") if any("RTX" in n for n in names) else ("p4", "P4: Medium")
     if encoder == "amf":
-        return "Quality" if any(re.search(r"RX\s?[5-9]\d{3}", n) for n in names) else "Balanced"
+        return ("quality", "Quality") if any(re.search(r"RX\s?[5-9]\d{3}", n) for n in names) else ("balanced", "Balanced")
     raise ValueError(f"no hardware preset for {encoder}")
 
 
@@ -150,8 +153,10 @@ def recommend(platform_key: str, system: SystemInfo, upload_mbps: float, ping_ms
     encoder = pick_encoder(system)
     if encoder == "x264":
         hw_cap_label, preset = X264_PROFILE[cls]
+        preset_id = preset
     else:
-        hw_cap_label, preset = HW_ENCODER_CAP[cls], hardware_preset(encoder, system)
+        hw_cap_label = HW_ENCODER_CAP[cls]
+        preset_id, preset = hardware_preset(encoder, system)
 
     platform_tiers = [i for i, t in enumerate(TIERS) if t.height <= platform.max_height]
     hw_tiers = [i for i in platform_tiers if i <= _tier_index(hw_cap_label)]
@@ -229,6 +234,7 @@ def recommend(platform_key: str, system: SystemInfo, upload_mbps: float, ping_ms
         encoder=encoder,
         encoder_name=ENCODER_NAMES[encoder],
         preset=preset,
+        preset_id=preset_id,
         video_kbps=video_kbps,
         audio_kbps=AUDIO_KBPS,
         keyframe_s=KEYFRAME_SECONDS,

@@ -12,6 +12,7 @@ Built with Python and [CustomTkinter](https://github.com/TomSchimansky/CustomTki
 - **Recommended OBS settings** built from your platform, hardware and upload speed, plus warnings when something will hold your stream back.
 - **Recommended ingest server** for the selected platform. Twitch servers are ranked by measured latency, YouTube shows its primary ingest, and Kick shows how its automatic route compares with your nearest region. Each result gets a latency rating: Good up to 100 ms, Fair up to 200 ms, High latency above that.
 - **Manual upload input** for when the speed test cannot reach a server, or when you already know your upload speed.
+- **OBS profile export** saves the recommended settings as an OBS profile you can load with Profile > Import (OBS 31 or newer).
 - **Copy to clipboard** so you can keep the settings next to OBS.
 
 ## How the speed test works
@@ -124,6 +125,23 @@ python main.py
 
 Changing the platform after generating updates the settings right away.
 
+### Exporting an OBS profile
+
+Instead of typing the values into OBS by hand, click **Export OBS Profile** and pick a folder. The tool creates a folder such as `Stream Optimizer Twitch 1080p60` containing two files:
+
+| File | What it sets |
+|------|--------------|
+| `basic.ini` | Advanced output mode, encoder, 160 Kbps AAC audio, 48 kHz stereo, canvas and output resolution, FPS |
+| `streamEncoder.json` | CBR, video bitrate, 2 second keyframe interval, preset and profile |
+
+Then, in OBS 31 or newer, choose **Profile > Import**, select that folder, and switch to the new profile.
+
+- The canvas (base) resolution matches your monitor, trimmed to 16:9, so your scenes keep their layout. The output resolution is the recommended one, scaled with Lanczos. A canvas smaller than the recommendation is never upscaled.
+- "Enforce streaming service encoder settings" is turned off. Otherwise OBS can clamp the bitrate to its own defaults for the service.
+- The profile has no stream key or server. Add them in **Settings > Stream** after importing.
+- An existing folder is never overwritten. A second export gets a numbered name.
+- OBS versions older than 31 use a different ID for the NVIDIA encoder, so they will not pick up the encoder from this profile.
+
 ## Project structure
 
 The code is split into `modules/`, which has no GUI imports and can be used on its own, and `ui/`, which only renders and wires things together.
@@ -137,6 +155,7 @@ stream-optimizer/
 │   ├── system_info.py       # CPU / RAM / GPU detection and hardware encoder support
 │   ├── speed_test.py        # speedtest-cli wrapper, picks the closest server by latency
 │   ├── ingest.py            # platform ingest server lookup and latency rating
+│   ├── obs_profile.py       # writes the recommendation as an importable OBS profile
 │   ├── net.py               # shared helpers: JSON fetch, TCP latency, parallel probes
 │   └── errors.py            # base error with a user facing message
 ├── ui/                      # CustomTkinter GUI

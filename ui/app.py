@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+from tkinter import filedialog
 from typing import Dict, List, Optional, Tuple
 
 import customtkinter as ctk
 
 from modules.ingest import IngestReport, check_ingest
+from modules.obs_profile import ProfileError, write_profile
 from modules.platforms import PLATFORMS
 from modules.recommender import Recommendation, recommend
 from modules.speed_test import SpeedTestResult, run_speed_test
@@ -16,7 +19,7 @@ from ui.cards import ConnectionCard, HardwareCard, Note, NotesCard, SettingsCard
 from ui.sidebar import Sidebar
 from ui.tasks import TaskRunner
 from ui.theme import APP_NAME, COLORS, TONES
-from ui.widgets import text_label
+from ui.widgets import fit_wraplength, text_label
 from ui.window import paint_window_background
 
 
@@ -51,12 +54,13 @@ class StreamOptimizerApp(ctk.CTk):
         self.hardware.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 16))
         self.connection = ConnectionCard(content)
         self.connection.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 16))
-        self.settings = SettingsCard(content, on_copy=self.copy_settings)
+        self.settings = SettingsCard(content, on_copy=self.copy_settings, on_export=self.export_profile)
         self.settings.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(0, 16))
         self.notes = NotesCard(content)
         self.notes.grid(row=2, column=0, columnspan=2, sticky="nsew")
         self.status = text_label(content, "Start by scanning your hardware.", 12, color="muted")
         self.status.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        fit_wraplength(content, [self.status], padding=0)
 
         self._render_ingest()
         paint_window_background(self, COLORS["bg"])
@@ -121,6 +125,21 @@ class StreamOptimizerApp(ctk.CTk):
         self.clipboard_clear()
         self.clipboard_append(text)
         self.set_status("Settings copied to clipboard.", "ok")
+
+    def export_profile(self) -> None:
+        if self.recommendation is None:
+            return
+        documents = Path.home() / "Documents"
+        parent = filedialog.askdirectory(parent=self, title="Choose where to save the OBS profile", mustexist=True,
+                                         initialdir=str(documents if documents.is_dir() else Path.home()))
+        if not parent:
+            return
+        try:
+            folder = write_profile(self.recommendation, Path(parent), (self.winfo_screenwidth(), self.winfo_screenheight()))
+        except ProfileError as exc:
+            self.set_status(exc.message, "critical")
+            return
+        self.set_status(f"Saved profile \"{folder.name}\". In OBS 31 or newer use Profile > Import on that folder, then add your stream key in Settings > Stream.", "ok")
 
     def _refresh_recommendation(self) -> None:
         if self.recommendation is not None:
